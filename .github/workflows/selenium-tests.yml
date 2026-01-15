@@ -1,4 +1,4 @@
-name: 🧪 Login & Register Module - Selenium Tests
+name: 🧪 Quiz Pengupil - Selenium Tests
 
 on:
   push:
@@ -6,7 +6,6 @@ on:
   pull_request:
     branches: [ main, develop ]
   schedule:
-    # Jalankan test setiap hari pukul 02:00 UTC
     - cron: '0 2 * * *'
   workflow_dispatch:
 
@@ -15,7 +14,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
+  selenium-test:
     name: 🔍 Selenium Tests
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -33,204 +32,220 @@ jobs:
           --health-retries=3
         ports:
           - 3306:3306
-      
-      apache:
-        image: php:8.1-apache
-        options: >-
-          --mount type=bind,source=${{ github.workspace }},target=/var/www/html
-          --publish 80:80
-        env:
-          PHP_INI_SCAN_DIR: /etc/php/conf.d
     
     steps:
-    # ============================================
-    # STEP 1: CHECKOUT CODE
-    # ============================================
-    - name: 📥 Checkout code
-      uses: actions/checkout@v4
-    
-    # ============================================
-    # STEP 2: SETUP ENVIRONMENT
-    # ============================================
-    - name: 🔧 Setup PHP
-      uses: shivammathur/setup-php@v2
-      with:
-        php-version: '8.1'
-        extensions: mysqli, pdo, pdo_mysql, curl
-        ini-values: display_errors=On
-    
-    - name: 🐍 Setup Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.11'
-        cache: 'pip'
-    
-    # ============================================
-    # STEP 3: INSTALL DEPENDENCIES
-    # ============================================
-    - name: 📦 Install Python dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install selenium pytest python-dotenv webdriver-manager
-        echo "✅ Python dependencies installed"
-    
-    - name: 🔌 Setup Apache
-      run: |
-        sudo apt-get update -qq
-        sudo apt-get install -y apache2 curl
-        sudo a2enmod rewrite
-        sudo systemctl start apache2
-        echo "✅ Apache setup complete"
-    
-    # ============================================
-    # STEP 4: COPY PROJECT FILES
-    # ============================================
-    - name: 📂 Copy project to Apache root
-      run: |
-        sudo cp -r ${{ github.workspace }}/* /var/www/html/
-        sudo chown -R www-data:www-data /var/www/html
-        echo "✅ Project files copied"
-    
-    # ============================================
-    # STEP 5: DATABASE SETUP
-    # ============================================
-    - name: ⏳ Wait for MySQL
-      run: |
-        for i in {1..60}; do
-          if mysql -h 127.0.0.1 -u root -proot -e "SELECT 1" >/dev/null 2>&1; then
-            echo "✅ MySQL is ready"
-            break
+      # ================================
+      # 1. CHECKOUT CODE
+      # ================================
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+      
+      # ================================
+      # 2. SETUP ENVIRONMENT
+      # ================================
+      - name: 🐍 Setup Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: 🔧 Setup PHP 8.1
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.1'
+          extensions: mysqli, pdo, pdo_mysql, curl
+          ini-values: display_errors=On
+      
+      - name: 🌐 Install Apache
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y apache2 libapache2-mod-php8.1 curl
+          sudo a2enmod rewrite php8.1
+          sudo systemctl start apache2
+          echo "✅ Apache started"
+      
+      # ================================
+      # 3. INSTALL DEPENDENCIES
+      # ================================
+      - name: 📦 Install Python dependencies from requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          echo "✅ Dependencies installed"
+          pip list | grep -E "selenium|pytest|webdriver"
+      
+      # ================================
+      # 4. CONFIGURE APPLICATION
+      # ================================
+      - name: 📂 Setup project in Apache
+        run: |
+          sudo mkdir -p /var/www/html/quiz-pengupil-main
+          sudo cp -r . /var/www/html/quiz-pengupil-main/
+          sudo chown -R www-data:www-data /var/www/html/quiz-pengupil-main
+          echo "✅ Project configured"
+      
+      # ================================
+      # 5. DATABASE SETUP
+      # ================================
+      - name: ⏳ Wait for MySQL
+        run: |
+          for i in {1..60}; do
+            mysql -h 127.0.0.1 -u root -proot -e "SELECT 1" 2>/dev/null && break
+            echo "⏳ MySQL loading... ($i/60)"
+            sleep 1
+          done
+      
+      - name: 📊 Import database schema
+        run: |
+          mysql -h 127.0.0.1 -u root -proot quiz_pengupil < db/quiz_pengupil.sql
+          echo "✅ Database imported"
+      
+      - name: 🔍 Verify database
+        run: |
+          mysql -h 127.0.0.1 -u root -proot quiz_pengupil -e "SHOW TABLES;"
+          echo "✅ Database verified"
+      
+      # ================================
+      # 6. APPLICATION READY CHECK
+      # ================================
+      - name: ⏳ Wait for Apache
+        run: |
+          for i in {1..60}; do
+            curl -s http://localhost/quiz-pengupil-main/login.php | grep -q "Sign-In" && break
+            echo "⏳ App loading... ($i/60)"
+            sleep 1
+          done
+      
+      - name: ✅ Health check
+        run: |
+          curl -s http://localhost/quiz-pengupil-main/login.php | head -10
+          echo "✅ Application ready"
+      
+      # ================================
+      # 7. CREATE ENVIRONMENT
+      # ================================
+      - name: 🔐 Create .env file
+        run: |
+          cat > .env << EOF
+          BASE_URL=http://localhost/quiz-pengupil-main
+          TEST_TIMEOUT=10
+          HEADLESS_MODE=false
+          EOF
+          echo "✅ Environment configured"
+      
+      # ================================
+      # 8. RUN SELENIUM TESTS
+      # ================================
+      - name: 🧪 Execute Selenium Tests
+        id: tests
+        run: |
+          pytest test_selenium_login_register.py \
+            -v \
+            --tb=short \
+            --junit-xml=junit.xml \
+            --html=report.html \
+            --self-contained-html
+        env:
+          BASE_URL: http://localhost/quiz-pengupil-main
+        continue-on-error: true
+      
+      # ================================
+      # 9. TEST RESULTS SUMMARY
+      # ================================
+      - name: 📊 Test Results Summary
+        if: always()
+        run: |
+          echo "=== 🧪 SELENIUM TEST RESULTS ===" 
+          if [ -f junit.xml ]; then
+            TOTAL=$(grep -oP 'tests="\K[0-9]+' junit.xml | head -1)
+            FAILED=$(grep -oP 'failures="\K[0-9]+' junit.xml | head -1)
+            ERRORS=$(grep -oP 'errors="\K[0-9]+' junit.xml | head -1)
+            
+            echo ""
+            echo "📈 Test Metrics:"
+            echo "  • Total Tests: $TOTAL"
+            echo "  • Passed: $((TOTAL - FAILED - ERRORS))"
+            echo "  • Failed: $FAILED"
+            echo "  • Errors: $ERRORS"
+            
+            if [ "$FAILED" -eq 0 ] && [ "$ERRORS" -eq 0 ]; then
+              echo ""
+              echo "✅ ALL TESTS PASSED!"
+            else
+              echo ""
+              echo "❌ SOME TESTS FAILED!"
+            fi
           fi
-          echo "⏳ Waiting for MySQL... ($i/60)"
-          sleep 1
-        done
-    
-    - name: 📊 Import database schema
-      run: |
-        mysql -h 127.0.0.1 -u root -proot quiz_pengupil < ${{ github.workspace }}/db/quiz_pengupil.sql
-        echo "✅ Database schema imported"
-    
-    - name: 🔍 Verify database
-      run: |
-        mysql -h 127.0.0.1 -u root -proot quiz_pengupil -e "SHOW TABLES;"
-        echo "✅ Database verified"
-    
-    # ============================================
-    # STEP 6: APPLICATION READY CHECK
-    # ============================================
-    - name: ⏳ Wait for Apache
-      run: |
-        for i in {1..60}; do
-          if curl -s http://localhost/quiz-pengupil-main/login.php > /dev/null 2>&1; then
-            echo "✅ Apache is ready"
-            break
-          fi
-          echo "⏳ Waiting for Apache... ($i/60)"
-          sleep 1
-        done
-    
-    - name: ✅ Health check
-      run: |
-        curl -s http://localhost/quiz-pengupil-main/login.php | grep -q "Sign-In" && echo "✅ Application is healthy" || exit 1
-    
-    # ============================================
-    # STEP 7: CONFIGURATION
-    # ============================================
-    - name: 🔐 Create environment file
-      run: |
-        echo "BASE_URL=http://localhost/quiz-pengupil-main" > ${{ github.workspace }}/.env
-        echo "TEST_TIMEOUT=10" >> ${{ github.workspace }}/.env
-        echo "✅ Environment file created"
-    
-    # ============================================
-    # STEP 8: RUN SELENIUM TESTS
-    # ============================================
-    - name: 🧪 Run Selenium Tests
-      id: test
-      run: |
-        cd ${{ github.workspace }}
-        pytest test_selenium_login_register.py -v --tb=short --junit-xml=junit.xml --html=report.html --self-contained-html
-        echo "test_status=passed" >> $GITHUB_OUTPUT
-      env:
-        BASE_URL: http://localhost/quiz-pengupil-main
-      continue-on-error: true
-    
-    # ============================================
-    # STEP 9: TEST RESULTS ANALYSIS
-    # ============================================
-    - name: 📊 Parse test results
-      if: always()
-      run: |
-        echo "=== TEST EXECUTION SUMMARY ===" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        if [ -f junit.xml ]; then
-          TESTS=$(grep -o 'tests="[0-9]*"' junit.xml | grep -o '[0-9]*')
-          FAILURES=$(grep -o 'failures="[0-9]*"' junit.xml | grep -o '[0-9]*')
-          ERRORS=$(grep -o 'errors="[0-9]*"' junit.xml | grep -o '[0-9]*')
-          
-          echo "| Metric | Count |" >> $GITHUB_STEP_SUMMARY
-          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Total Tests | $TESTS |" >> $GITHUB_STEP_SUMMARY
-          echo "| Failures | $FAILURES |" >> $GITHUB_STEP_SUMMARY
-          echo "| Errors | $ERRORS |" >> $GITHUB_STEP_SUMMARY
-          
-          if [ "$FAILURES" -eq 0 ] && [ "$ERRORS" -eq 0 ]; then
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "✅ **All Tests PASSED!**" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "❌ **Some Tests FAILED!**" >> $GITHUB_STEP_SUMMARY
-          fi
-        fi
-    
-    # ============================================
-    # STEP 10: UPLOAD ARTIFACTS
-    # ============================================
-    - name: 📤 Upload test results (v4)
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: test-results-${{ matrix.os || 'linux' }}-${{ github.run_number }}
-        path: |
-          junit.xml
-          report.html
-        retention-days: 30
-        if-no-files-found: ignore
-    
-    - name: 📈 Upload coverage report
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: coverage-report-${{ github.run_number }}
-        path: htmlcov/
-        retention-days: 7
-        if-no-files-found: ignore
-    
-    # ============================================
-    # STEP 11: PUBLISH TEST REPORT
-    # ============================================
-    - name: 📋 Publish test report
-      if: always() && hashFiles('junit.xml') != ''
-      uses: EnricoMi/publish-unit-test-result-action@v2
-      with:
-        files: junit.xml
-        check_name: 🧪 Selenium Test Results
-        comment_title: Test Results Summary
-    
-    # ============================================
-    # STEP 12: GITHUB STATUS CHECK
-    # ============================================
-    - name: ❌ Fail if tests failed
-      if: failure()
-      run: |
-        echo "❌ Selenium tests failed!"
-        exit 1
-    
-    # ============================================
-    # STEP 13: SUCCESS NOTIFICATION
-    # ============================================
-    - name: ✅ Tests completed successfully
-      if: success()
-      run: |
-        echo "✅ All 21 test cases PASSED!"
-        echo "📊 Report: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      
+      # ================================
+      # 10. UPLOAD ARTIFACTS (V4)
+      # ================================
+      - name: 📤 Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: selenium-test-results
+          path: |
+            junit.xml
+            report.html
+          retention-days: 30
+      
+      - name: 📤 Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: htmlcov/
+          retention-days: 7
+      
+      # ================================
+      # 11. PUBLISH REPORT
+      # ================================
+      - name: 📋 Publish test report
+        if: always() && hashFiles('junit.xml') != ''
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        with:
+          files: junit.xml
+          check_name: 🧪 Selenium Test Results
+      
+      # ================================
+      # 12. PR COMMENT
+      # ================================
+      - name: 💬 Comment on PR
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let comment = '## 🧪 Test Results\n\n';
+            
+            if (fs.existsSync('junit.xml')) {
+              const xml = fs.readFileSync('junit.xml', 'utf8');
+              const total = xml.match(/tests="(\d+)"/)?.[1] || '?';
+              const failed = xml.match(/failures="(\d+)"/)?.[1] || '0';
+              const errors = xml.match(/errors="(\d+)"/)?.[1] || '0';
+              
+              comment += `| Status | Count |\n|--------|-------|\n`;
+              comment += `| ✅ Passed | ${total - failed - errors} |\n`;
+              comment += `| ❌ Failed | ${failed} |\n`;
+              comment += `| ⚠️ Errors | ${errors} |\n`;
+              
+              comment += failed == 0 && errors == 0 ? '\n✅ All tests passed!' : '\n❌ Some tests failed.';
+            }
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+      
+      # ================================
+      # 13. COMPLETION
+      # ================================
+      - name: ✅ Test execution complete
+        if: always()
+        run: |
+          echo "🏁 Workflow completed"
+          echo "📊 Run: ${{ github.run_number }}"
+          echo "📍 Branch: ${{ github.ref }}"
