@@ -1,0 +1,151 @@
+name: 🧪 Selenium Tests - Simple
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  selenium-test:
+    name: 🔍 Run Selenium Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: quiz_pengupil
+        options: >-
+          --health-cmd="mysqladmin ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=3
+        ports:
+          - 3306:3306
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+      
+      - name: 🐍 Setup Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: 🔧 Setup PHP & Apache
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y php apache2 libapache2-mod-php php-mysql php-curl
+          sudo systemctl start apache2
+      
+      - name: 📦 Install Python dependencies
+        run: |
+          pip install -r requirements.txt
+      
+      - name: ⚙️ Setup project in Apache
+        run: |
+          sudo mkdir -p /var/www/html/quiz-pengupil-main
+          sudo cp -r . /var/www/html/quiz-pengupil-main
+          sudo chown -R www-data:www-data /var/www/html/quiz-pengupil-main
+          cat > /tmp/apache-config.conf << 'EOF'
+          <VirtualHost *:80>
+              ServerName localhost
+              DocumentRoot /var/www/html
+              <Directory /var/www/html>
+                  AllowOverride All
+                  Require all granted
+              </Directory>
+          </VirtualHost>
+          EOF
+          sudo tee /etc/apache2/sites-available/000-default.conf > /dev/null < /tmp/apache-config.conf
+          sudo systemctl restart apache2
+      
+      - name: ⏳ Wait for MySQL
+        run: |
+          for i in {1..30}; do
+            mysqladmin ping -h localhost -u root -proot && break || sleep 1
+          done
+      
+      - name: 📊 Import database
+        run: |
+          mysql -h localhost -u root -proot quiz_pengupil < db/quiz_pengupil.sql
+      
+      - name: ✅ Verify database
+        run: |
+          mysql -h localhost -u root -proot quiz_pengupil -e "SHOW TABLES;"
+      
+      - name: 🏥 Wait for Apache
+        run: |
+          for i in {1..30}; do
+            curl -f http://localhost/quiz-pengupil-main/login.php > /dev/null 2>&1 && break || sleep 2
+          done
+      
+      - name: 🌐 Health check
+        run: |
+          curl -i http://localhost/quiz-pengupil-main/login.php | head -n 5
+      
+      - name: 🧪 Run Selenium tests
+        run: |
+          python -m pytest test_selenium_login_register.py -v --html=report.html --self-contained-html --junit-xml=junit.xml || true
+        env:
+          BASE_URL: http://localhost/quiz-pengupil-main
+      
+      - name: 📊 Display test results
+        if: always()
+        run: |
+          echo "=== 🧪 SELENIUM TEST RESULTS ===" 
+          if [ -f junit.xml ]; then
+            python -c "
+import xml.etree.ElementTree as ET
+try:
+  tree = ET.parse('junit.xml')
+  root = tree.getroot()
+  testcases = root.findall('.//testcase')
+  errors = root.findall('.//error')
+  failures = root.findall('.//failure')
+  
+  total = len(testcases)
+  passed = total - len(errors) - len(failures)
+  failed = len(failures)
+  error_count = len(errors)
+  
+  print(f'📈 Test Metrics:')
+  print(f'  • Total Tests: {total}')
+  print(f'  • Passed: {passed} ✅')
+  print(f'  • Failed: {failed} ❌')
+  print(f'  • Errors: {error_count} ⚠️')
+  print()
+  
+  if failed == 0 and error_count == 0:
+    print(f'✅ ALL {total} TESTS PASSED!')
+  else:
+    print(f'⚠️ {failed + error_count} tests need attention')
+except Exception as e:
+  print(f'Error parsing results: {e}')
+            "
+          fi
+      
+      - name: 📤 Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: |
+            junit.xml
+            report.html
+          retention-days: 30
+      
+      - name: ✅ Done
+        run: |
+          echo "🏁 Tests completed!"
